@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+
+set -e
+[ -n "$PYENV_DEBUG" ] && set -x
+
+if [ -z "$PYENV_ROOT" ]; then
+  PYENV_ROOT="${HOME}/.pyenv"
+fi
+
+usage() {
+  { echo "find broken usage: [PYENV_VERSION=<version>] pyenv-fix-version\nfix usage: [PYENV_VERSION=<version>] pyenv-fix-version path1/to/missing/libs path2/to/missing/libs"
+  } >&2
+  exit "${1:-1}"
+}
+
+set_vars() {
+    DYNLOAD_DIR=$(realpath $(pyenv prefix)/lib/python*.*)
+    echo $DYNLOAD_DIR
+
+    PLATFORM=$(uname -s)
+    case "$PLATFORM" in
+        "Darwin")
+            fix_file="fix_file_darwin"
+            ;;
+        *)
+            echo "${PLATFORM} support TBD"
+            exit 1
+    esac
+}
+
+find_files() {
+    DIR="$1"
+    find ${DIR} -name "*.so" 2> /dev/null
+}
+
+get_dependencies() {
+    FILE="$1"
+    otool -L "${FILE}" | tail -n +2 | awk '{print $1}'
+}
+
+find_broken_dependencies() {
+    FILE="$1"
+    dependencies=( $(get_dependencies "$FILE") )
+    declare -a broken
+    for dep in "${dependencies[@]}"; do
+        if [ ! -f "$dep" ]; then
+            echo "$(basename $dep)"
+        fi
+    done
+}
+
+fix_file() {
+    FILE="$1"
+    dependencies=( $(get_dependencies "$FILE") )
+    for dep in "${dependencies[@]}"; do
+        if [ ! -f "$dep" ]; then
+            find_filename=$(basename $dep)
+            echo -e "\nSearching for $find_filename"
+            replacements=( $(find $SEARCH_DIRS -name "$find_filename" 2> /dev/null) )
+            if [ "$?" -ne 0 ] || [ "${#replacements[@]}" == "0" ]; then
+                echo "Cannot find replacement for \"$find_filename\""
+                exit 1
+            fi
+
+            # Make a backup first
+            cp "$FILE" "${FILE}-broken"
+            echo "Changing \"$dep\" to \"${replacements[0]}\" in \"$FILE\""
+            install_name_tool -change "$dep" "${replacements[0]}" "$FILE"
+        fi
+    done
+}
+
+if [ -n "$@" ]; then
+    SEARCH_DIRS="$@"
+fi
+
+set_vars
+
+files_to_check=( $(find_files "${DYNLOAD_DIR}") )
+if [ -z "$SEARCH_DIRS" ]; then
+    declare -a broken
+    for file in "${files_to_check[@]}"; do
+        broken+=( $(find_broken_dependencies $file) )
+    done
+    if [ "${#broken[@]}" -gt 0 ]; then
+        IFS=$'\n' broken_sorted=( $(sort -u <<<"${broken[*]}") )
+        unset IFS
+        echo "Cannot resolve the following dependencies for version $(pyenv version-name):"
+        for file in "${broken_sorted[@]}"; do
+            echo "  $file"
+        done
+    else
+        echo "No problems found for $(pyenv version-name)"
+    fi
+else
+    for file in "${files_to_check[@]}"; do
+        fix_file $file
+    done
+fi
