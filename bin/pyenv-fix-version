@@ -7,14 +7,29 @@ if [ -z "$PYENV_ROOT" ]; then
   PYENV_ROOT="${HOME}/.pyenv"
 fi
 
+error() {
+    echo -e "ERROR: $@" 1>&2
+    exit 1
+}
+
 usage() {
-  { echo "find broken usage: [PYENV_VERSION=<version>] pyenv-fix-version\nfix usage: [PYENV_VERSION=<version>] pyenv-fix-version path1/to/missing/libs path2/to/missing/libs"
-  } >&2
-  exit "${1:-1}"
+    cat <<EOF
+Find broken dependencies usage:
+    [PYENV_VERSION=<version>] pyenv fix-version: [-v|--verbose]
+
+Fix broken dependencies usage:
+    [PYENV_VERSION=<version>] pyenv fix-version [-v|--verbose] path/to/missing/libs [extra/dirs ...]
+EOF
+    exit -1
 }
 
 set_vars() {
     DYNLOAD_DIR=$(realpath $(pyenv prefix)/lib/python*.*)
+    if [ -n "$VERBOSE" ]; then
+        echo "Searching version $(pyenv version-name) for broken libraries:"
+        echo "  $DYNLOAD_DIR"
+        echo
+    fi
 
     PLATFORM=$(uname -s)
     case "$PLATFORM" in
@@ -54,12 +69,16 @@ fix_file() {
     for dep in "${dependencies[@]}"; do
         if [ ! -f "$dep" ]; then
             find_filename=$(basename $dep)
-            echo -e "\nSearching for $find_filename"
-            replacements=( $(find $SEARCH_DIRS -name "$find_filename" 2> /dev/null) )
-            if [ "$?" -ne 0 ] || [ "${#replacements[@]}" == "0" ]; then
-                echo "Cannot find replacement for \"$find_filename\""
-                exit 1
+            if [ -n "$VERBOSE" ]; then
+                echo "$FILE has broken dependency"
             fi
+            echo "Searching for $find_filename"
+            result=$(find ${SEARCH_DIRS[*]} -name "$find_filename")
+            if [ -z "$result" ]; then
+                error "Cannot find replacement for $find_filename"
+            fi
+            exit -2
+            replacements=( echo "$result" )
 
             # Make a backup first
             cp "$FILE" "${FILE}-broken"
@@ -69,17 +88,56 @@ fix_file() {
     done
 }
 
-if [ -n "$@" ]; then
-    SEARCH_DIRS="$@"
-fi
+# possible arguments
+# -v | --verbose
+# -h | --help
+#
+# the rest of the arguments are directories
+while true; do
+    case $1 in
+        -v | -verbose )
+            VERBOSE=1;
+            shift;;
+        -h | -help ) usage;;
+        * ) break;;
+    esac
+done
 
+# Initialize non-argument based variables
 set_vars
 
+# Any remaining arguments are search directories
+if [ "$#" -gt 0 ]; then
+    SEARCH_DIRS=( $@ )
+    if [ -n "$VERBOSE" ] && [ "${#SEARCH_DIRS[@]}" -gt 0 ]; then
+        echo "Directories to search for missing libraries:"
+        for dir in "${SEARCH_DIRS[@]}"; do
+            echo "  $dir"
+        done
+        echo
+    fi
+
+    # Verify that the directories provided are valid
+    for dir in "${SEARCH_DIRS[@]}"; do
+        if [ ! -d $dir ]; then
+            error "$dir is not a valid search directory"
+        fi
+    done
+fi
+
 files_to_check=( $(find_files "${DYNLOAD_DIR}") )
-if [ -z "$SEARCH_DIRS" ]; then
+if [ "${#SEARCH_DIRS[@]}" -eq 0 ]; then
     declare -a broken
     for file in "${files_to_check[@]}"; do
-        broken+=( $(find_broken_dependencies $file) )
+        missing=( $(find_broken_dependencies $file) )
+        if [ -n "$VERBOSE" ] && [ "${#missing[@]}" -gt 0 ]; then
+            echo "broken dependencies found for $file:"
+            for bad_file in "${missing[@]}"; do
+                echo "  $bad_file"
+            done
+            echo
+        fi
+        broken+=$missing
     done
     if [ "${#broken[@]}" -gt 0 ]; then
         IFS=$'\n' broken_sorted=( $(sort -u <<<"${broken[*]}") )
