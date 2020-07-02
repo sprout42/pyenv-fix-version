@@ -15,7 +15,6 @@ usage() {
 
 set_vars() {
     DYNLOAD_DIR=$(realpath $(pyenv prefix)/lib/python*.*)
-    echo $DYNLOAD_DIR
 
     PLATFORM=$(uname -s)
     case "$PLATFORM" in
